@@ -1,64 +1,59 @@
-use std::{iter::FusedIterator, marker::PhantomData, ptr::NonNull};
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::iter::FusedIterator;
+use std::ptr::NonNull;
 
-use crate::{
-    debug_assert_positive,
-    tensor::{
-        Dimension,
-        device::{CPU, DeviceInfo},
-        mat::RawTensor,
-        traits::{LinearIndexMemory, MutLinearIndexMemory, MutSliceable, Sliceable},
-    },
-};
+use crate::debug_assert_positive;
+use crate::tensor::Dimension;
+use crate::tensor::layout::Layout;
 
-pub struct ContiguousIter<'a, T, D: DeviceInfo> {
-    tensor: &'a RawTensor<T, D>,
-    pos: usize,
+pub struct ContiguousIter<'a, T: Copy> {
+    data: RwLockReadGuard<'a, Box<[T]>>,
+    index: usize,
 }
 
-impl<'a, T: Copy, D: DeviceInfo> ContiguousIter<'a, T, D> {
-    pub fn new(tensor: &'a RawTensor<T, D>) -> Self {
-        Self { tensor, pos: 0 }
+impl<'a, T: Copy> ContiguousIter<'a, T> {
+    pub fn new(lock: &'a RwLock<Box<[T]>>) -> Self {
+        let data: RwLockReadGuard<'_, Box<[T]>> = lock.read();
+        Self { data, index: 0 }
     }
 }
 
-impl<'a, T: Copy> Iterator for ContiguousIter<'a, T, CPU> {
+impl<'a, T: Copy> Iterator for ContiguousIter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.pos >= self.tensor.len() {
+        if self.index >= self.data.len() {
             return None;
         }
 
-        self.pos += 1;
-        return Some(self.tensor.index_memory(self.pos - 1));
+        let item = &self.data[self.index] as *const T;
+        self.index += 1;
+
+        return Some(unsafe { &*item });
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.tensor.len() - self.pos;
+        let len = self.data.len() - self.index;
 
         (len, Some(len))
     }
 }
 
-impl<'a, T: Copy> ExactSizeIterator for ContiguousIter<'a, T, CPU> {}
+impl<'a, T: Copy> ExactSizeIterator for ContiguousIter<'a, T> {}
 
-impl<'a, T: Copy> FusedIterator for ContiguousIter<'a, T, CPU> {}
+impl<'a, T: Copy> FusedIterator for ContiguousIter<'a, T> {}
 
-/////////////////////////////////////////////////////////////
+// /////////////////////////////////////////////////////////////
 
-pub struct MutContiguousIter<'a, T> {
-    ptr: NonNull<T>,
-    end: NonNull<T>,
-    _marker: PhantomData<&'a mut T>,
+pub struct MutContiguousIter<'a, T: Copy> {
+    data: RwLockWriteGuard<'a, Box<[T]>>,
+    index: usize,
 }
 
 impl<'a, T: Copy> MutContiguousIter<'a, T> {
-    pub fn new(ptr: NonNull<T>, len: usize) -> Self {
-        Self {
-            ptr,
-            end: unsafe { ptr.add(len) },
-            _marker: PhantomData {},
-        }
+    pub fn new(lock: &'a RwLock<Box<[T]>>) -> Self {
+        let data: RwLockWriteGuard<'_, Box<[T]>> = lock.write();
+        Self { data, index: 0 }
     }
 }
 
@@ -66,19 +61,19 @@ impl<'a, T: Copy> Iterator for MutContiguousIter<'a, T> {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.ptr >= self.end {
+        if self.index >= self.data.len() {
             return None;
         }
 
-        unsafe {
-            self.ptr = self.ptr.offset(1);
+        let mut item = NonNull::new(&mut self.data[self.index] as *mut T).unwrap();
+        self.index += 1;
 
-            Some(self.ptr.offset(-1).as_mut())
-        }
+        return Some(unsafe { item.as_mut() });
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = unsafe { self.end.offset_from_unsigned(self.ptr) };
+        let len = self.data.len() - self.index;
+
         (len, Some(len))
     }
 }
@@ -87,28 +82,33 @@ impl<'a, T: Copy> ExactSizeIterator for MutContiguousIter<'a, T> {}
 
 impl<'a, T: Copy> FusedIterator for MutContiguousIter<'a, T> {}
 
-/////////////////////////////////////////////////////////////
+// /////////////////////////////////////////////////////////////
 
 pub struct SliceIter<'a, T: Copy> {
-    ptr: *const T,
+    data: RwLockReadGuard<'a, Box<[T]>>,
+    pos: isize,
+    counter: Box<[i32]>,
     shape: &'a [i32],
     adj_stride: &'a [i32],
-    counter: Box<[i32]>,
     left_over: usize,
-    _marker: PhantomData<&'a T>,
 }
 
 impl<'a, T: Copy> SliceIter<'a, T> {
-    pub fn new(ptr: *const T, data_len: usize, shape: &'a [i32], adj_stride: &'a [i32]) -> Self {
+    pub fn new(
+        lock: &'a RwLock<Box<[T]>>,
+        data_len: usize,
+        shape: &'a [i32],
+        adj_stride: &'a [i32],
+    ) -> Self {
         let counter = vec![0; shape.len()].into_boxed_slice();
 
         Self {
-            ptr,
+            data: lock.read(),
+            pos: 0,
             shape,
             adj_stride,
             counter: counter,
             left_over: data_len,
-            _marker: PhantomData {},
         }
     }
 }
@@ -136,9 +136,11 @@ impl<'a, T: Copy> Iterator for SliceIter<'a, T> {
             break;
         }
 
+        let pos = self.pos as usize;
+
         unsafe {
-            let item = self.ptr;
-            self.ptr = self.ptr.offset(self.adj_stride[step_dim] as isize);
+            let item = &self.data[pos] as *const T;
+            self.pos += self.adj_stride[step_dim] as isize;
             self.left_over -= 1;
 
             Some(&*item)
@@ -157,25 +159,30 @@ impl<'a, T: Copy> FusedIterator for SliceIter<'a, T> {}
 ///////////////////////////////////////////////////////////////
 
 pub struct MutSliceIter<'a, T: Copy> {
-    ptr: NonNull<T>,
+    data: RwLockWriteGuard<'a, Box<[T]>>,
+    pos: isize,
+    counter: Box<[i32]>,
     shape: &'a [i32],
     adj_stride: &'a [i32],
-    counter: Box<[i32]>,
     left_over: usize,
-    _marker: PhantomData<&'a mut T>,
 }
 
 impl<'a, T: Copy> MutSliceIter<'a, T> {
-    pub fn new(ptr: NonNull<T>, data_len: usize, shape: &'a [i32], adj_stride: &'a [i32]) -> Self {
+    pub fn new(
+        lock: &'a RwLock<Box<[T]>>,
+        data_len: usize,
+        shape: &'a [i32],
+        adj_stride: &'a [i32],
+    ) -> Self {
         let counter = vec![0; shape.len()].into_boxed_slice();
 
         Self {
-            ptr,
+            data: lock.write(),
+            pos: 0,
             shape,
             adj_stride,
-            counter,
+            counter: counter,
             left_over: data_len,
-            _marker: PhantomData {},
         }
     }
 }
@@ -205,11 +212,11 @@ impl<'a, T: Copy> Iterator for MutSliceIter<'a, T> {
 
         let step = self.adj_stride[step_dim];
         unsafe {
-            let mut item_ptr = self.ptr;
-            self.ptr = self.ptr.offset(step as isize);
+            let item_ptr = &mut self.data[self.pos as usize] as *mut T;
+            self.pos += step as isize;
             self.left_over -= 1;
 
-            Some(item_ptr.as_mut())
+            Some(&mut *item_ptr)
         }
     }
 
@@ -224,42 +231,47 @@ impl<'a, T: Copy> FusedIterator for MutSliceIter<'a, T> {}
 
 /////////////////////////////////////////////////////////////
 
-pub enum StepInfo<'a, T: Copy> {
+pub enum StepInfo<T: Copy> {
     EnterDimension(usize),
     ExitDimension(usize),
-    Value(&'a T),
+    Value(T),
     End,
 }
 
-pub struct InformedSliceIter<'a, T: Copy, C: Sliceable> {
-    slice: &'a C,
-    current_state: StepInfo<'a, T>,
+pub struct InformedSliceIter<'a, T: Copy> {
+    buffer: RwLockReadGuard<'a, Box<[T]>>,
+    layout: &'a Layout,
+    current_state: StepInfo<T>,
     pos: i64,
+    len: usize,
     counter: Vec<i32>,
 }
 
-impl<'a, T: Copy, C: Sliceable> InformedSliceIter<'a, T, C> {
-    pub fn new(slice: &'a C) -> Self {
+impl<'a, T: Copy> InformedSliceIter<'a, T> {
+    pub fn new(buffer: RwLockReadGuard<'a, Box<[T]>>, iter_len: usize, layout: &'a Layout) -> Self {
+        let len = layout.shape().len();
+
         Self {
-            slice,
+            buffer,
+            layout,
             current_state: StepInfo::<T>::EnterDimension(0),
             pos: 0,
-            counter: vec![0; slice.shape().len()],
+            len: iter_len,
+            counter: vec![0; len],
         }
     }
 }
 
-impl<'a, T: Copy, C: Sliceable<Output = T>> Iterator for InformedSliceIter<'a, T, C> {
-    type Item = StepInfo<'a, T>;
+impl<'a, T: Copy> Iterator for InformedSliceIter<'a, T> {
+    type Item = StepInfo<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.current_state {
             StepInfo::EnterDimension(dim) => {
-                if dim == self.slice.shape().len() - 1 {
+                if dim == self.layout.shape().len() - 1 {
                     debug_assert_positive!(self.pos);
 
-                    self.current_state =
-                        StepInfo::Value(self.slice.index_memory(self.pos as usize));
+                    self.current_state = StepInfo::Value(self.buffer[self.pos as usize]);
 
                     return Some(StepInfo::EnterDimension(dim));
                 }
@@ -277,12 +289,12 @@ impl<'a, T: Copy, C: Sliceable<Output = T>> Iterator for InformedSliceIter<'a, T
                 self.counter[dim] = 0;
                 self.counter[dim - 1] += 1;
 
-                if self.counter[dim - 1] == self.slice.shape()[dim - 1] {
+                if self.counter[dim - 1] == self.layout.shape()[dim - 1] {
                     self.current_state = StepInfo::ExitDimension(dim - 1);
                     return Some(StepInfo::ExitDimension(dim));
                 }
 
-                self.pos += self.slice.adj_stride()[dim - 1] as i64;
+                self.pos += self.layout.adj_stride()[dim - 1] as i64;
                 self.current_state = StepInfo::EnterDimension(dim);
 
                 Some(StepInfo::ExitDimension(dim))
@@ -290,19 +302,19 @@ impl<'a, T: Copy, C: Sliceable<Output = T>> Iterator for InformedSliceIter<'a, T
             StepInfo::Value(v) => {
                 let counter_last = self.counter.len() - 1;
 
-                if *self.counter.last().unwrap() == *self.slice.shape().last().unwrap() - 1 {
+                if *self.counter.last().unwrap() == *self.layout.shape().last().unwrap() - 1 {
                     self.current_state = StepInfo::ExitDimension(self.counter.len() - 1);
                     self.counter[counter_last] = 0;
 
                     return Some(StepInfo::Value(v));
                 }
 
-                self.pos += *self.slice.adj_stride().last().unwrap() as i64;
+                self.pos += *self.layout.adj_stride().last().unwrap() as i64;
                 self.counter[counter_last] += 1;
 
                 debug_assert_positive!(self.pos);
 
-                self.current_state = StepInfo::Value(self.slice.index_memory(self.pos as usize));
+                self.current_state = StepInfo::Value(self.buffer[self.pos as usize]);
 
                 Some(StepInfo::Value(v))
             }
@@ -311,12 +323,12 @@ impl<'a, T: Copy, C: Sliceable<Output = T>> Iterator for InformedSliceIter<'a, T
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.slice.len() - self.pos as usize;
+        let len = self.len - self.pos as usize;
 
         (len, Some(len))
     }
 }
 
-impl<'a, T: Copy, C: Sliceable<Output = T>> ExactSizeIterator for InformedSliceIter<'a, T, C> {}
+impl<'a, T: Copy> ExactSizeIterator for InformedSliceIter<'a, T> {}
 
-impl<'a, T: Copy, C: Sliceable<Output = T>> FusedIterator for InformedSliceIter<'a, T, C> {}
+impl<'a, T: Copy> FusedIterator for InformedSliceIter<'a, T> {}

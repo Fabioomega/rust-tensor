@@ -2,14 +2,12 @@ use std::iter::{Zip, zip};
 use std::ops::Index;
 use std::ops::{Range, RangeFrom, RangeFull, RangeTo};
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use crate::tensor::iter::MutSliceIter;
-use crate::tensor::traits::{LinearIndexMemory, Sliceable};
-use crate::{debug_assert_positive, impl_index};
 use crate::{
     debug_only, impl_display,
     tensor::{
-        device::{CPU, DeviceInfo},
         internals::calculate_adjacent_dim_stride,
         iter::{InformedSliceIter, SliceIter},
         layout::Layout,
@@ -17,6 +15,7 @@ use crate::{
         traits::Dimension,
     },
 };
+use parking_lot::RwLock;
 
 enum SliceBounds {
     Beginning,
@@ -98,8 +97,8 @@ impl From<Range<i32>> for SliceRange {
 #[derive(Debug)]
 pub struct SliceInfo {
     offset: usize,
-    shape: Vec<i32>,
-    adj_stride: Vec<i32>,
+    shape: Box<[i32]>,
+    adj_stride: Box<[i32]>,
 }
 
 impl SliceInfo {
@@ -107,7 +106,7 @@ impl SliceInfo {
         debug_assert!(container.shape().len() >= range.len());
 
         let mut offset: i64 = container.offset() as i64;
-        let mut new_shape: Vec<i32> = container.shape().to_vec();
+        let mut new_shape: Box<[i32]> = container.shape().to_vec().into_boxed_slice();
 
         for (dim, r) in range.iter().enumerate() {
             let start = match r.start {
@@ -170,78 +169,70 @@ impl SliceInfo {
 
 /////////////////////////////////////////////////////
 
-pub struct RawTensorSlice<'a, T: Copy, D>
-where
-    D: DeviceInfo,
-{
-    base: &'a RawTensor<T, D>,
+pub struct RawTensorSlice<T: Copy> {
+    base: Arc<RwLock<Box<[T]>>>,
     offset: usize,
     layout: Layout,
     len: usize,
 }
 
-impl<'a, T: Copy, D: DeviceInfo> RawTensorSlice<'a, T, D> {
+impl<T: Copy> RawTensorSlice<T> {
     #[inline]
-    pub(crate) fn new(base: &'a RawTensor<T, D>, layout: Layout, offset: usize) -> Self {
+    pub(crate) fn new(base: &Arc<RwLock<Box<[T]>>>, layout: Layout, offset: usize) -> Self {
         let len: i32 = layout.shape.iter().product();
 
         Self {
-            base,
+            base: base.clone(),
             layout,
             len: len as usize,
             offset,
         }
     }
 
-    pub(crate) fn from_info(base: &'a RawTensor<T, D>, info: SliceInfo) -> Self {
+    pub(crate) fn from_info(
+        base: &Arc<RwLock<Box<[T]>>>,
+        stride: Box<[i32]>,
+        info: SliceInfo,
+    ) -> Self {
         let len: i32 = info.shape.iter().product();
 
         Self {
-            base,
+            base: base.clone(),
             offset: info.offset,
             len: len as usize,
-            layout: Layout::new(info.shape, base.stride().to_vec(), info.adj_stride),
+            layout: Layout::new(info.shape, stride.to_vec().into(), info.adj_stride),
         }
     }
 
     #[inline]
     pub fn iter(&self) -> SliceIter<'_, T> {
-        SliceIter::new(self.as_ptr(), self.len(), self.shape(), self.adj_stride())
+        SliceIter::new(&self.base, self.len(), self.shape(), self.adj_stride())
     }
 
     #[inline]
-    pub fn informed_iter(&'a self) -> InformedSliceIter<'a, T, Self> {
-        InformedSliceIter::new(&self)
+    pub fn mut_iter(&self) -> MutSliceIter<'_, T> {
+        MutSliceIter::new(&self.base, self.len(), self.shape(), self.adj_stride())
     }
 
     #[inline]
-    pub fn slice(&self, range: &[SliceRange]) -> RawTensorSlice<'a, T, D> {
-        RawTensorSlice::from_info(self.base, SliceInfo::from_range(self, range))
+    pub fn informed_iter(&self) -> InformedSliceIter<'_, T> {
+        InformedSliceIter::new(self.base.read(), self.len(), &self.layout)
+    }
+
+    #[inline]
+    pub fn slice(&self, range: &[SliceRange]) -> RawTensorSlice<T> {
+        let info = SliceInfo::from_range(self, range);
+
+        RawTensorSlice::from_info(&self.base, self.stride().into(), info)
     }
 
     #[inline]
     pub fn as_slice(&self) -> &Self {
         self
     }
-
-    #[inline]
-    pub fn as_ptr(&self) -> *const T {
-        unsafe { self.base.as_ptr().add(self.offset) }
-    }
 }
 
-impl<'a, T: Copy, D: DeviceInfo> LinearIndexMemory for RawTensorSlice<'a, T, D> {
-    type Output = T;
-
-    // THIS FUNCTION DOES NOT INDEX A SLICE LINEARLY!
-    // DO NOT use it unless you know what you're doing!
-    // This function may reference uninitialized memory!
-    fn index_memory(&self, index: usize) -> &Self::Output {
-        self.base.index_memory(index + self.offset)
-    }
-}
-
-impl<T: Copy, D: DeviceInfo> Dimension for RawTensorSlice<'_, T, D> {
+impl<T: Copy> Dimension for RawTensorSlice<T> {
     #[inline]
     fn len(&self) -> usize {
         self.len
@@ -268,132 +259,5 @@ impl<T: Copy, D: DeviceInfo> Dimension for RawTensorSlice<'_, T, D> {
     }
 }
 
-impl<'a, T: Copy, D: DeviceInfo> Sliceable for RawTensorSlice<'a, T, D> {}
-
-impl_display!(RawTensorSlice<'_, T, D>);
-impl_index!(RawTensorSlice<'_, T, CPU>);
-
-/////////////////////////////////////////////////////
-pub struct RawMutTensorSlice<'a, T: Copy, D>
-where
-    D: DeviceInfo,
-{
-    base: &'a mut RawTensor<T, D>,
-    offset: usize,
-    layout: Layout,
-    len: usize,
-}
-
-impl<'a, T: Copy, D: DeviceInfo> RawMutTensorSlice<'a, T, D> {
-    #[inline]
-    pub(crate) fn new(base: &'a mut RawTensor<T, D>, layout: Layout, offset: usize) -> Self {
-        let len: i32 = layout.shape.iter().product();
-
-        Self {
-            base,
-            layout,
-            len: len as usize,
-            offset,
-        }
-    }
-
-    pub(crate) fn from_info(base: &'a mut RawTensor<T, D>, info: SliceInfo) -> Self {
-        let len: i32 = info.shape.iter().product();
-        let stride = base.stride().to_vec();
-
-        Self {
-            base,
-            offset: info.offset,
-            len: len as usize,
-            layout: Layout::new(info.shape, stride, info.adj_stride),
-        }
-    }
-
-    #[inline]
-    pub fn iter(&self) -> SliceIter<'_, T> {
-        SliceIter::new(self.as_ptr(), self.len(), self.shape(), self.adj_stride())
-    }
-
-    #[inline]
-    pub fn mut_iter(&mut self) -> MutSliceIter<'_, T> {
-        MutSliceIter::new(
-            self.as_mut_ptr(),
-            self.len(),
-            self.shape(),
-            self.adj_stride(),
-        )
-    }
-
-    #[inline]
-    pub fn informed_iter(&self) -> InformedSliceIter<'_, T, Self> {
-        InformedSliceIter::new(self)
-    }
-
-    #[inline]
-    pub fn slice(&'a self, range: &[SliceRange]) -> RawTensorSlice<'a, T, D> {
-        RawTensorSlice::from_info(self.base, SliceInfo::from_range(self, range))
-    }
-
-    #[inline]
-    pub fn as_slice(&'a self) -> RawTensorSlice<'a, T, D> {
-        RawTensorSlice::new(self.base, self.layout.clone(), self.offset)
-    }
-
-    #[inline]
-    pub fn as_mut_slice(&self) -> &Self {
-        self
-    }
-
-    #[inline]
-    pub fn as_ptr(&self) -> *const T {
-        unsafe { self.base.as_ptr().add(self.offset) }
-    }
-
-    #[inline]
-    pub fn as_mut_ptr(&mut self) -> NonNull<T> {
-        unsafe { self.base.as_mut_ptr().add(self.offset) }
-    }
-}
-
-impl<'a, T: Copy, D: DeviceInfo> LinearIndexMemory for RawMutTensorSlice<'a, T, D> {
-    type Output = T;
-
-    // THIS FUNCTION DOES NOT INDEX A SLICE LINEARLY!
-    // DO NOT use it unless you know what you're doing!
-    // This function may reference uninitialized memory!
-    fn index_memory(&self, index: usize) -> &Self::Output {
-        self.base.index_memory(index + self.offset)
-    }
-}
-
-impl<T: Copy, D: DeviceInfo> Dimension for RawMutTensorSlice<'_, T, D> {
-    #[inline]
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    #[inline]
-    fn shape(&self) -> &[i32] {
-        self.layout.shape()
-    }
-
-    #[inline]
-    fn stride(&self) -> &[i32] {
-        self.layout.stride()
-    }
-
-    #[inline]
-    fn adj_stride(&self) -> &[i32] {
-        self.layout.adj_stride()
-    }
-
-    #[inline]
-    fn offset(&self) -> usize {
-        self.offset
-    }
-}
-
-impl<'a, T: Copy, D: DeviceInfo> Sliceable for RawMutTensorSlice<'a, T, D> {}
-
-impl_display!(RawMutTensorSlice<'_, T, D>);
-impl_index!(RawMutTensorSlice<'_, T, CPU>);
+impl_display!(RawTensorSlice<T>);
+// impl_index!(RawTensorSlice<'_, T, CPU>);

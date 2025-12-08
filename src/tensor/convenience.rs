@@ -44,7 +44,7 @@ pub mod arange {
             v.push(i as f64);
         }
 
-        Mat::from_vec(v, &[size as i32])
+        Mat::from_vec(v.into_boxed_slice(), &[size as i32])
     }
 
     pub fn _arange_start(start: usize, end: usize) -> Mat<f64> {
@@ -56,7 +56,7 @@ pub mod arange {
 
         let size = v.len();
 
-        Mat::from_vec(v, &[1, size as i32])
+        Mat::from_vec(v.into_boxed_slice(), &[1, size as i32])
     }
 
     pub fn _arange_step(start: usize, end: usize, step: usize) -> Mat<f64> {
@@ -68,7 +68,7 @@ pub mod arange {
 
         let size = v.len();
 
-        Mat::from_vec(v, &[size as i32])
+        Mat::from_vec(v.into_boxed_slice(), &[size as i32])
     }
 
     #[macro_export]
@@ -93,7 +93,7 @@ pub mod arange {
             v.push(i as f64);
         }
 
-        Mat::from_vec(v, shape)
+        Mat::from_vec(v.into_boxed_slice(), shape)
     }
 
     pub fn _arange_start_shape(start: usize, end: usize, shape: &[i32]) -> Mat<f64> {
@@ -103,7 +103,7 @@ pub mod arange {
             v.push(i as f64);
         }
 
-        Mat::from_vec(v, shape)
+        Mat::from_vec(v.into_boxed_slice(), shape)
     }
 
     pub fn _arange_step_shape(start: usize, end: usize, step: usize, shape: &[i32]) -> Mat<f64> {
@@ -113,6 +113,6 @@ pub mod arange {
             v.push(i as f64);
         }
 
-        Mat::from_vec(v, shape)
+        Mat::from_vec(v.into_boxed_slice(), shape)
     }
 }

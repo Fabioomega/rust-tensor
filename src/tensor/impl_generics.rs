@@ -1,15 +1,14 @@
 #[macro_export]
 macro_rules! impl_display {
     ($struct_name: ty) => {
-        impl<T: std::fmt::Display + Copy, D: DeviceInfo> std::fmt::Display for $struct_name {
+        impl<T: std::fmt::Display + Copy> std::fmt::Display for $struct_name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 let mut indent = 0;
                 let mut in_seq = false;
 
-                let slice = self.as_slice();
-                let last = slice.shape().len() - 1;
+                let last = self.shape().len() - 1;
 
-                for step in slice.informed_iter() {
+                for step in self.informed_iter() {
                     match step {
                         super::StepInfo::EnterDimension(dim) => {
                             write!(f, "{:indent$}[", "", indent = indent)?;
@@ -34,7 +33,7 @@ macro_rules! impl_display {
                                 write!(f, ", ")?;
                             }
 
-                            write!(f, "{:>4}", *v)?;
+                            write!(f, "{:>4}", v)?;
 
                             in_seq = true;
                         }
@@ -71,25 +70,25 @@ macro_rules! impl_display {
 //     };
 // }
 
-#[macro_export]
-macro_rules! impl_index {
-    ($struct_name: ty) => {
-        impl<T: Copy> Index<&[i32]> for $struct_name {
-            type Output = T;
+// #[macro_export]
+// macro_rules! impl_index {
+//     ($struct_name: ty) => {
+//         impl<T: Copy> Index<&[i32]> for $struct_name {
+//             type Output = T;
 
-            fn index(&self, index: &[i32]) -> &Self::Output {
-                debug_assert_eq!(self.layout.stride.len(), index.len());
+//             fn index(&self, index: &[i32]) -> &Self::Output {
+//                 debug_assert_eq!(self.layout.stride.len(), index.len());
 
-                let mut pos: i32 = 0;
+//                 let mut pos: i32 = 0;
 
-                for (stride, i) in zip(self.stride(), index) {
-                    pos += *stride * *i;
-                }
+//                 for (stride, i) in zip(self.stride(), index) {
+//                     pos += *stride * *i;
+//                 }
 
-                debug_assert_positive!(pos);
+//                 debug_assert_positive!(pos);
 
-                self.index_memory(pos as usize)
-            }
-        }
-    };
-}
+//                 self.index_memory(pos as usize)
+//             }
+//         }
+//     };
+// }
