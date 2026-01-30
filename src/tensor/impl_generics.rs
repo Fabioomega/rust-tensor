@@ -1,7 +1,10 @@
 #[macro_export]
 macro_rules! impl_display {
     ($struct_name: ty) => {
-        impl<T: std::fmt::Display + Copy> std::fmt::Display for $struct_name {
+        use $crate::tensor::definitions::NumberLike;
+        use $crate::tensor::iter::StepInfo;
+
+        impl<T: std::fmt::Display + NumberLike> std::fmt::Display for $struct_name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 let mut indent = 0;
                 let mut in_seq = false;
@@ -10,7 +13,7 @@ macro_rules! impl_display {
 
                 for step in self.informed_iter() {
                     match step {
-                        super::StepInfo::EnterDimension(dim) => {
+                        StepInfo::EnterDimension(dim) => {
                             write!(f, "{:indent$}[", "", indent = indent)?;
                             indent += 2;
 
@@ -18,7 +21,7 @@ macro_rules! impl_display {
                                 write!(f, "\n")?;
                             }
                         }
-                        super::StepInfo::ExitDimension(dim) => {
+                        StepInfo::ExitDimension(dim) => {
                             indent -= 2;
                             in_seq = false;
 
@@ -28,7 +31,7 @@ macro_rules! impl_display {
 
                             write!(f, "]\n")?;
                         }
-                        super::StepInfo::Value(v) => {
+                        StepInfo::Value(v) => {
                             if in_seq {
                                 write!(f, ", ")?;
                             }

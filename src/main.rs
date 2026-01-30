@@ -1,11 +1,13 @@
-use crate::tensor::{Mat, arange};
+use crate::tensor::{Dimension, Tensor, arange};
 
 mod tensor;
 
 fn main() {
-    let mat = srange![27, &[3, 3, 3]];
-    let test = mat.slice(s![.., 1..2, 1..2]);
+    let t1 = arange![12];
+    let mut p = t1.as_promise();
+    for i in 0..20 {
+        p = p + i as f64;
+    }
 
-    println!("This is a matrix:\n {}", mat);
-    println!("This is a slice:\n {}", test);
+    println!("{}", (p * 2.0).materialize());
 }

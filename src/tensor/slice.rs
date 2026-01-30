@@ -11,7 +11,7 @@ use crate::{
         internals::calculate_adjacent_dim_stride,
         iter::{InformedSliceIter, SliceIter},
         layout::Layout,
-        mat::RawTensor,
+        tensor::RawTensor,
         traits::Dimension,
     },
 };
@@ -171,21 +171,15 @@ impl SliceInfo {
 
 pub struct RawTensorSlice<T: Copy> {
     base: Arc<RwLock<Box<[T]>>>,
-    offset: usize,
     layout: Layout,
-    len: usize,
 }
 
 impl<T: Copy> RawTensorSlice<T> {
     #[inline]
-    pub(crate) fn new(base: &Arc<RwLock<Box<[T]>>>, layout: Layout, offset: usize) -> Self {
-        let len: i32 = layout.shape.iter().product();
-
+    pub(crate) fn new(base: &Arc<RwLock<Box<[T]>>>, layout: Layout) -> Self {
         Self {
             base: base.clone(),
             layout,
-            len: len as usize,
-            offset,
         }
     }
 
@@ -198,10 +192,19 @@ impl<T: Copy> RawTensorSlice<T> {
 
         Self {
             base: base.clone(),
-            offset: info.offset,
-            len: len as usize,
-            layout: Layout::new(info.shape, stride.to_vec().into(), info.adj_stride),
+            layout: Layout::new(
+                info.shape,
+                stride.to_vec().into(),
+                info.adj_stride,
+                info.offset,
+                len as usize,
+            ),
         }
+    }
+
+    #[inline]
+    pub fn to_tensor(&self) -> RawTensor<T> {
+        RawTensor::from_iter(self.iter().map(|x| *x), self.shape())
     }
 
     #[inline]
@@ -235,7 +238,7 @@ impl<T: Copy> RawTensorSlice<T> {
 impl<T: Copy> Dimension for RawTensorSlice<T> {
     #[inline]
     fn len(&self) -> usize {
-        self.len
+        self.layout.len()
     }
 
     #[inline]
@@ -255,7 +258,7 @@ impl<T: Copy> Dimension for RawTensorSlice<T> {
 
     #[inline]
     fn offset(&self) -> usize {
-        self.offset
+        self.layout.offset()
     }
 }
 
