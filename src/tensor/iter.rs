@@ -3,18 +3,23 @@ use std::iter::FusedIterator;
 use std::ptr::NonNull;
 
 use crate::debug_assert_positive;
-use crate::tensor::layout::Layout;
+use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::StreamingIterator;
 
 pub struct ContiguousIter<'a, T: Copy> {
-    data: RwLockReadGuard<'a, Box<[T]>>,
-    index: usize,
+    data: RwLockReadGuard<'a, Vec<T>>,
+    offset: usize,
+    left_over: usize,
 }
 
 impl<'a, T: Copy> ContiguousIter<'a, T> {
-    pub fn new(lock: &'a RwLock<Box<[T]>>) -> Self {
-        let data: RwLockReadGuard<'_, Box<[T]>> = lock.read();
-        Self { data, index: 0 }
+    pub fn new(lock: &'a RwLock<Vec<T>>, offset: usize, len: usize) -> Self {
+        let data: RwLockReadGuard<'_, Vec<T>> = lock.read();
+        Self {
+            data,
+            offset,
+            left_over: len,
+        }
     }
 }
 
@@ -22,20 +27,19 @@ impl<'a, T: Copy> Iterator for ContiguousIter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.data.len() {
+        if self.left_over == 0 {
             return None;
         }
 
-        let item = &self.data[self.index] as *const T;
-        self.index += 1;
+        let item = &self.data[self.offset] as *const T;
+        self.offset += 1;
+        self.left_over -= 1;
 
         Some(unsafe { &*item })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.data.len() - self.index;
-
-        (len, Some(len))
+        (self.left_over, Some(self.left_over))
     }
 }
 
@@ -43,16 +47,19 @@ impl<'a, T: Copy> ExactSizeIterator for ContiguousIter<'a, T> {}
 
 impl<'a, T: Copy> FusedIterator for ContiguousIter<'a, T> {}
 
-// /////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////
+
+// TODO: This impl is not correct anymore. If used please fix it like
+// the non-mut one.
 
 pub struct MutContiguousIter<'a, T: Copy> {
-    data: RwLockWriteGuard<'a, Box<[T]>>,
+    data: RwLockWriteGuard<'a, Vec<T>>,
     index: usize,
 }
 
 impl<'a, T: Copy> MutContiguousIter<'a, T> {
-    pub fn new(lock: &'a RwLock<Box<[T]>>) -> Self {
-        let data: RwLockWriteGuard<'_, Box<[T]>> = lock.write();
+    pub fn new(lock: &'a RwLock<Vec<T>>) -> Self {
+        let data: RwLockWriteGuard<'_, Vec<T>> = lock.write();
         Self { data, index: 0 }
     }
 }
@@ -82,31 +89,67 @@ impl<'a, T: Copy> ExactSizeIterator for MutContiguousIter<'a, T> {}
 
 impl<'a, T: Copy> FusedIterator for MutContiguousIter<'a, T> {}
 
-// /////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////
+
+pub struct CopiedContiguousIter<'a, T: Copy> {
+    data: RwLockReadGuard<'a, Vec<T>>,
+    offset: usize,
+    left_over: usize,
+}
+
+impl<'a, T: Copy> CopiedContiguousIter<'a, T> {
+    pub fn new(lock: &'a RwLock<Vec<T>>, offset: usize, len: usize) -> Self {
+        let data: RwLockReadGuard<'_, Vec<T>> = lock.read();
+        Self {
+            data,
+            offset,
+            left_over: len,
+        }
+    }
+}
+
+impl<'a, T: Copy> Iterator for CopiedContiguousIter<'a, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.left_over == 0 {
+            return None;
+        }
+
+        let item = self.data[self.offset];
+        self.offset += 1;
+        self.left_over -= 1;
+
+        Some(item)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left_over, Some(self.left_over))
+    }
+}
+
+impl<'a, T: Copy> ExactSizeIterator for CopiedContiguousIter<'a, T> {}
+
+impl<'a, T: Copy> FusedIterator for CopiedContiguousIter<'a, T> {}
+
+///////////////////////////////////////////////////////////////
 
 pub struct SliceIter<'a, T: Copy> {
-    data: RwLockReadGuard<'a, Box<[T]>>,
+    data: RwLockReadGuard<'a, Vec<T>>,
     pos: isize,
     counter: Box<[i32]>,
-    shape: &'a [i32],
-    adj_stride: &'a [i32],
+    layout: &'a Layout,
     left_over: usize,
 }
 
 impl<'a, T: Copy> SliceIter<'a, T> {
-    pub fn new(
-        lock: &'a RwLock<Box<[T]>>,
-        data_len: usize,
-        shape: &'a [i32],
-        adj_stride: &'a [i32],
-    ) -> Self {
-        let counter = vec![0; shape.len()].into_boxed_slice();
+    pub fn new(lock: &'a RwLock<Vec<T>>, data_len: usize, layout: &'a Layout) -> Self {
+        let counter = vec![0; layout.shape().len()].into_boxed_slice();
 
         Self {
             data: lock.read(),
-            pos: 0,
-            shape,
-            adj_stride,
+            pos: layout.offset() as isize,
+            layout,
             counter,
             left_over: data_len,
         }
@@ -126,7 +169,7 @@ impl<'a, T: Copy> Iterator for SliceIter<'a, T> {
         let mut step_dim = last;
 
         for dim in (1..self.counter.len()).rev() {
-            if self.counter[dim] == self.shape[dim] {
+            if self.counter[dim] == self.layout.shape()[dim] {
                 self.counter[dim] = 0;
                 self.counter[dim - 1] += 1;
 
@@ -140,7 +183,7 @@ impl<'a, T: Copy> Iterator for SliceIter<'a, T> {
 
         unsafe {
             let item = &self.data[pos] as *const T;
-            self.pos += self.adj_stride[step_dim] as isize;
+            self.pos += self.layout.adj_stride()[step_dim] as isize;
             self.left_over -= 1;
 
             Some(&*item)
@@ -159,28 +202,21 @@ impl<'a, T: Copy> FusedIterator for SliceIter<'a, T> {}
 ///////////////////////////////////////////////////////////////
 
 pub struct MutSliceIter<'a, T: Copy> {
-    data: RwLockWriteGuard<'a, Box<[T]>>,
+    data: RwLockWriteGuard<'a, Vec<T>>,
     pos: isize,
     counter: Box<[i32]>,
-    shape: &'a [i32],
-    adj_stride: &'a [i32],
+    layout: &'a Layout,
     left_over: usize,
 }
 
 impl<'a, T: Copy> MutSliceIter<'a, T> {
-    pub fn new(
-        lock: &'a RwLock<Box<[T]>>,
-        data_len: usize,
-        shape: &'a [i32],
-        adj_stride: &'a [i32],
-    ) -> Self {
-        let counter = vec![0; shape.len()].into_boxed_slice();
+    pub fn new(lock: &'a RwLock<Vec<T>>, data_len: usize, layout: &'a Layout) -> Self {
+        let counter = vec![0; layout.shape().len()].into_boxed_slice();
 
         Self {
             data: lock.write(),
-            pos: 0,
-            shape,
-            adj_stride,
+            pos: layout.offset() as isize,
+            layout,
             counter,
             left_over: data_len,
         }
@@ -200,7 +236,7 @@ impl<'a, T: Copy> Iterator for MutSliceIter<'a, T> {
         let mut step_dim = last;
 
         for dim in (1..self.counter.len()).rev() {
-            if self.counter[dim] == self.shape[dim] {
+            if self.counter[dim] == self.layout.shape[dim] {
                 self.counter[dim] = 0;
                 self.counter[dim - 1] += 1;
 
@@ -210,7 +246,7 @@ impl<'a, T: Copy> Iterator for MutSliceIter<'a, T> {
             break;
         }
 
-        let step = self.adj_stride[step_dim];
+        let step = self.layout.adj_stride()[step_dim];
         unsafe {
             let item_ptr = &mut self.data[self.pos as usize] as *mut T;
             self.pos += step as isize;
@@ -232,28 +268,21 @@ impl<'a, T: Copy> FusedIterator for MutSliceIter<'a, T> {}
 ///////////////////////////////////////////////////////////////
 
 pub struct CopiedSliceIter<'a, T: Copy> {
-    data: RwLockReadGuard<'a, Box<[T]>>,
+    data: RwLockReadGuard<'a, Vec<T>>,
     pos: isize,
     counter: Box<[i32]>,
-    shape: &'a [i32],
-    adj_stride: &'a [i32],
+    layout: &'a Layout,
     left_over: usize,
 }
 
 impl<'a, T: Copy> CopiedSliceIter<'a, T> {
-    pub fn new(
-        lock: &'a RwLock<Box<[T]>>,
-        data_len: usize,
-        shape: &'a [i32],
-        adj_stride: &'a [i32],
-    ) -> Self {
-        let counter = vec![0; shape.len()].into_boxed_slice();
+    pub fn new(lock: &'a RwLock<Vec<T>>, data_len: usize, layout: &'a Layout) -> Self {
+        let counter = vec![0; layout.shape().len()].into_boxed_slice();
 
         Self {
             data: lock.read(),
-            pos: 0,
-            shape,
-            adj_stride,
+            pos: layout.offset() as isize,
+            layout,
             counter,
             left_over: data_len,
         }
@@ -273,7 +302,7 @@ impl<'a, T: Copy> Iterator for CopiedSliceIter<'a, T> {
         let mut step_dim = last;
 
         for dim in (1..self.counter.len()).rev() {
-            if self.counter[dim] == self.shape[dim] {
+            if self.counter[dim] == self.layout.shape()[dim] {
                 self.counter[dim] = 0;
                 self.counter[dim - 1] += 1;
 
@@ -285,13 +314,11 @@ impl<'a, T: Copy> Iterator for CopiedSliceIter<'a, T> {
 
         let pos = self.pos as usize;
 
-        unsafe {
-            let item = &self.data[pos] as *const T;
-            self.pos += self.adj_stride[step_dim] as isize;
-            self.left_over -= 1;
+        let item = self.data[pos];
+        self.pos += self.layout.adj_stride()[step_dim] as isize;
+        self.left_over -= 1;
 
-            Some(*item)
-        }
+        Some(item)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -303,7 +330,7 @@ impl<'a, T: Copy> ExactSizeIterator for CopiedSliceIter<'a, T> {}
 
 impl<'a, T: Copy> FusedIterator for CopiedSliceIter<'a, T> {}
 
-/////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////
 
 pub enum StepInfo<T: Copy> {
     EnterDimension(usize),
@@ -313,7 +340,7 @@ pub enum StepInfo<T: Copy> {
 }
 
 pub struct InformedSliceIter<'a, T: Copy> {
-    buffer: RwLockReadGuard<'a, Box<[T]>>,
+    buffer: RwLockReadGuard<'a, Vec<T>>,
     layout: &'a Layout,
     next_state: StepInfo<T>,
     pos: i64,
@@ -321,14 +348,14 @@ pub struct InformedSliceIter<'a, T: Copy> {
 }
 
 impl<'a, T: Copy> InformedSliceIter<'a, T> {
-    pub fn new(lock: &'a RwLock<Box<[T]>>, layout: &'a Layout) -> Self {
+    pub fn new(lock: &'a RwLock<Vec<T>>, layout: &'a Layout) -> Self {
         let len = layout.shape().len();
 
         Self {
             buffer: lock.read(),
             layout,
             next_state: StepInfo::<T>::EnterDimension(0),
-            pos: 0,
+            pos: layout.offset() as i64,
             counter: vec![0; len],
         }
     }

@@ -3,7 +3,7 @@ use std::str::Matches;
 
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::graph::NodeKind;
-use crate::tensor::ops::impl_compute_op::{OpKind, OpScalarKind};
+use crate::tensor::ops::impl_compute_op::{OpKind, OpKindScalar};
 
 ///////////////////////////////////////////
 
@@ -57,52 +57,52 @@ pub fn try_fuse<T: NumberLike>(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Fus
 }
 
 fn fuse_sum_scalar<T: NumberLike>(
-    op1: &OpScalarKind<T>, // Parent
+    op1: &OpKindScalar<T>, // Parent
     inputs1: &[NodeKind<T>],
-    op2: &OpScalarKind<T>, // Child
+    op2: &OpKindScalar<T>, // Child
 ) -> Fusion<T> {
     let s1: T = match op1 {
-        OpScalarKind::Sum(scalar) => *scalar,
-        OpScalarKind::Sub(scalar) => -*scalar,
+        OpKindScalar::Sum(scalar) => *scalar,
+        OpKindScalar::Sub(scalar) => -*scalar,
         _ => unreachable!("You fucked something up!"),
     };
 
     let s2: T = match op2 {
-        OpScalarKind::Sum(scalar) => *scalar,
-        OpScalarKind::Sub(scalar) => -*scalar,
+        OpKindScalar::Sum(scalar) => *scalar,
+        OpKindScalar::Sub(scalar) => -*scalar,
         _ => unreachable!("You fucked something up!"),
     };
 
     Fusion {
-        op: OpKind::ScalarOp(OpScalarKind::Sum(s1 + s2)),
+        op: OpKind::ScalarOp(OpKindScalar::Sum(s1 + s2)),
         inputs: inputs1.into(),
     }
 }
 
 fn fuse_mul_scalar<T: NumberLike>(
-    op1: &OpScalarKind<T>, // Parent
+    op1: &OpKindScalar<T>, // Parent
     inputs1: &[NodeKind<T>],
-    op2: &OpScalarKind<T>, // Child
+    op2: &OpKindScalar<T>, // Child
 ) -> Fusion<T> {
     match op1 {
-        OpScalarKind::Mul(s1) => match op2 {
-            OpScalarKind::Mul(s2) => Fusion {
-                op: OpKind::ScalarOp(OpScalarKind::Mul(*s1 * *s2)),
+        OpKindScalar::Mul(s1) => match op2 {
+            OpKindScalar::Mul(s2) => Fusion {
+                op: OpKind::ScalarOp(OpKindScalar::Mul(*s1 * *s2)),
                 inputs: inputs1.into(),
             },
-            OpScalarKind::Div(s2) => Fusion {
-                op: OpKind::ScalarOp(OpScalarKind::Mul(*s1 / *s2)),
+            OpKindScalar::Div(s2) => Fusion {
+                op: OpKind::ScalarOp(OpKindScalar::Mul(*s1 / *s2)),
                 inputs: inputs1.into(),
             },
             _ => unreachable!("no other op should appear here"),
         },
-        OpScalarKind::Div(s1) => match op2 {
-            OpScalarKind::Mul(s2) => Fusion {
-                op: OpKind::ScalarOp(OpScalarKind::Mul(*s2 / *s1)),
+        OpKindScalar::Div(s1) => match op2 {
+            OpKindScalar::Mul(s2) => Fusion {
+                op: OpKind::ScalarOp(OpKindScalar::Mul(*s2 / *s1)),
                 inputs: inputs1.into(),
             },
-            OpScalarKind::Div(s2) => Fusion {
-                op: OpKind::ScalarOp(OpScalarKind::Div(*s1 * *s2)),
+            OpKindScalar::Div(s2) => Fusion {
+                op: OpKind::ScalarOp(OpKindScalar::Div(*s1 * *s2)),
                 inputs: inputs1.into(),
             },
             _ => unreachable!("no other op should appear here"),
@@ -113,9 +113,9 @@ fn fuse_mul_scalar<T: NumberLike>(
 
 #[inline]
 fn fuse_scalars_into_combination<T: NumberLike>(
-    op1: &OpScalarKind<T>,
+    op1: &OpKindScalar<T>,
     inputs1: &[NodeKind<T>],
-    op2: &OpScalarKind<T>,
+    op2: &OpKindScalar<T>,
 ) -> Fusion<T> {
     let ops = Box::new([op1.clone(), op2.clone()]);
     Fusion {
@@ -125,38 +125,38 @@ fn fuse_scalars_into_combination<T: NumberLike>(
 }
 
 fn fuse_scalars<T: NumberLike>(
-    op1: &OpScalarKind<T>,
+    op1: &OpKindScalar<T>,
     inputs1: &[NodeKind<T>],
-    op2: &OpScalarKind<T>,
+    op2: &OpKindScalar<T>,
 ) -> Fusion<T> {
     match op1 {
-        OpScalarKind::Sum(_) => match op2 {
-            OpScalarKind::Sum(_) => fuse_sum_scalar(op1, inputs1, op2),
-            OpScalarKind::Sub(_) => fuse_sum_scalar(op1, inputs1, op2),
+        OpKindScalar::Sum(_) => match op2 {
+            OpKindScalar::Sum(_) => fuse_sum_scalar(op1, inputs1, op2),
+            OpKindScalar::Sub(_) => fuse_sum_scalar(op1, inputs1, op2),
             _ => fuse_scalars_into_combination(op1, inputs1, op2),
         },
-        OpScalarKind::Sub(_) => match op2 {
-            OpScalarKind::Sum(_) => fuse_sum_scalar(op1, inputs1, op2),
-            OpScalarKind::Sub(_) => fuse_sum_scalar(op1, inputs1, op2),
+        OpKindScalar::Sub(_) => match op2 {
+            OpKindScalar::Sum(_) => fuse_sum_scalar(op1, inputs1, op2),
+            OpKindScalar::Sub(_) => fuse_sum_scalar(op1, inputs1, op2),
             _ => fuse_scalars_into_combination(op1, inputs1, op2),
         },
-        OpScalarKind::Mul(_) => match op2 {
-            OpScalarKind::Mul(_) => fuse_mul_scalar(op1, inputs1, op2),
-            OpScalarKind::Div(_) => fuse_mul_scalar(op1, inputs1, op2),
+        OpKindScalar::Mul(_) => match op2 {
+            OpKindScalar::Mul(_) => fuse_mul_scalar(op1, inputs1, op2),
+            OpKindScalar::Div(_) => fuse_mul_scalar(op1, inputs1, op2),
             _ => fuse_scalars_into_combination(op1, inputs1, op2),
         },
-        OpScalarKind::Div(_) => match op2 {
-            OpScalarKind::Mul(_) => fuse_mul_scalar(op1, inputs1, op2),
-            OpScalarKind::Div(_) => fuse_mul_scalar(op1, inputs1, op2),
+        OpKindScalar::Div(_) => match op2 {
+            OpKindScalar::Mul(_) => fuse_mul_scalar(op1, inputs1, op2),
+            OpKindScalar::Div(_) => fuse_mul_scalar(op1, inputs1, op2),
             _ => fuse_scalars_into_combination(op1, inputs1, op2),
         },
     }
 }
 
 fn fuse_scalar_combination<T: NumberLike>(
-    ops: &[OpScalarKind<T>],
+    ops: &[OpKindScalar<T>],
     inputs1: &[NodeKind<T>],
-    op2: &OpScalarKind<T>,
+    op2: &OpKindScalar<T>,
 ) -> Fusion<T> {
     let tail = &ops[ops.len() - 1];
     let fused = fuse_scalars(tail, inputs1, op2);
@@ -166,14 +166,14 @@ fn fuse_scalar_combination<T: NumberLike>(
 
     let new_ops = match op {
         OpKind::FusedScalar(_) => {
-            let mut vec: Vec<OpScalarKind<T>> = Vec::with_capacity(ops.len() + 1);
+            let mut vec: Vec<OpKindScalar<T>> = Vec::with_capacity(ops.len() + 1);
             vec.extend(ops[..ops.len() - 1].iter().cloned());
             vec.push(op2.clone());
 
             vec.into_boxed_slice()
         }
         OpKind::ScalarOp(scalar_op) => {
-            let mut vec: Vec<OpScalarKind<T>> = Vec::with_capacity(ops.len());
+            let mut vec: Vec<OpKindScalar<T>> = Vec::with_capacity(ops.len());
             vec.extend(ops[..ops.len() - 1].iter().cloned());
             vec.push(scalar_op.clone());
 
@@ -205,6 +205,13 @@ where
         },
         OpKind::FusedScalar(ops) => match op2 {
             OpKind::ScalarOp(s2) => Some(fuse_scalar_combination(ops, inputs1, s2)),
+            _ => None,
+        },
+        OpKind::View(_) => match op2 {
+            OpKind::AsContiguous => Some(Fusion {
+                op: op1.clone(),
+                inputs: inputs1.into(),
+            }),
             _ => None,
         },
 

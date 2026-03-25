@@ -9,7 +9,7 @@ pub(super) fn calculate_dim_stride(shape: &[i32]) -> Box<[i32]> {
 }
 
 pub(super) fn calculate_adjacent_dim_stride(stride: &[i32], slice_shape: &[i32]) -> Box<[i32]> {
-    let mut v: Box<[i32]> = stride.to_vec().into_boxed_slice();
+    let mut v: Box<[i32]> = stride.into();
 
     let mut accum: i32 = 0;
     for i in (0..stride.len() - 1).rev() {

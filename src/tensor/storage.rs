@@ -1,32 +1,41 @@
 use parking_lot::RwLock;
-use std::boxed::Box;
 use std::sync::Arc;
 
-use crate::tensor::iter::{ChunkedSliceIter, CopiedSliceIter, InformedSliceIter, SliceIter};
-use crate::tensor::layout::Layout;
+use crate::tensor::iter::{
+    ChunkedSliceIter, ContiguousIter, CopiedContiguousIter, CopiedSliceIter, InformedSliceIter,
+    SliceIter,
+};
+use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::Dimension;
 use crate::{debug_assert_positive, impl_display};
 
+pub enum IterImpl<C, N> {
+    Contiguous(C),
+    NotContiguous(N),
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct Storage<T: Copy> {
-    buffer: Arc<RwLock<Box<[T]>>>,
+    pub(crate) buffer: Arc<RwLock<Vec<T>>>,
 }
 
 impl<T: Copy> Storage<T> {
     #[inline]
     pub fn from_scalar(scalar: T, len: usize) -> Self {
         Self {
-            buffer: Arc::new(RwLock::new(vec![scalar; len].into_boxed_slice())),
+            buffer: Arc::new(RwLock::new(vec![scalar; len])),
         }
     }
 
     #[inline]
-    pub fn from_arc(buffer: Arc<RwLock<Box<[T]>>>) -> Self {
+    pub fn from_arc(buffer: Arc<RwLock<Vec<T>>>) -> Self {
         Self { buffer }
     }
 
     #[inline]
-    pub fn from_vec(vector: Box<[T]>) -> Self {
+    pub fn from_vec(vector: Vec<T>) -> Self {
         Self {
             buffer: Arc::new(RwLock::new(vector)),
         }
@@ -37,7 +46,8 @@ impl<T: Copy> Storage<T> {
     where
         I: IntoIterator<Item = T>,
     {
-        let vector = std::vec::Vec::from_iter(iter).into_boxed_slice();
+        let vector = std::vec::Vec::from_iter(iter);
+        //////////////////////////////////////////////////////////////////////////////////////////////////
         Self::from_vec(vector)
     }
 
@@ -58,14 +68,19 @@ impl<T: Copy> Clone for Storage<T> {
 
 #[derive(Debug)]
 pub struct TensorData<T: Copy> {
-    storage: Storage<T>,
+    pub(crate) storage: Storage<T>,
     layout: Layout,
+    pub(crate) reusable: bool,
 }
 
 impl<T: Copy> TensorData<T> {
     #[inline]
     pub fn new(storage: Storage<T>, layout: Layout) -> Self {
-        Self { storage, layout }
+        Self {
+            storage,
+            layout,
+            reusable: false,
+        }
     }
 
     #[inline]
@@ -77,24 +92,27 @@ impl<T: Copy> TensorData<T> {
         Self {
             storage: Storage::from_scalar(scalar, len as usize),
             layout: Layout::from_shape(shape, 0),
+            reusable: false,
         }
     }
 
     #[inline]
-    pub fn from_arc(buffer: Arc<RwLock<Box<[T]>>>, shape: &[i32]) -> Self {
+    pub fn from_arc(buffer: Arc<RwLock<Vec<T>>>, shape: &[i32]) -> Self {
         Self {
             storage: Storage::from_arc(buffer),
             layout: Layout::from_shape(shape, 0),
+            reusable: false,
         }
     }
 
     #[inline]
-    pub fn from_vec(vector: Box<[T]>, shape: &[i32]) -> Self {
-        debug_assert!(vector.len() == (shape.iter().product::<i32>() as usize));
+    pub fn from_vec(vector: Vec<T>, shape: &[i32], offset: usize) -> Self {
+        debug_assert!(vector.len() <= (shape.iter().product::<i32>() as usize));
 
         Self {
             storage: Storage::from_vec(vector),
-            layout: Layout::from_shape(shape, 0),
+            layout: Layout::from_shape(shape, offset),
+            reusable: false,
         }
     }
 
@@ -103,8 +121,8 @@ impl<T: Copy> TensorData<T> {
     where
         I: IntoIterator<Item = T>,
     {
-        let vector = std::vec::Vec::from_iter(iter).into_boxed_slice();
-        Self::from_vec(vector, shape)
+        let vector = std::vec::Vec::from_iter(iter);
+        Self::from_vec(vector, shape, 0)
     }
 
     #[inline]
@@ -112,27 +130,47 @@ impl<T: Copy> TensorData<T> {
         Self {
             storage: self.storage.clone_reference(),
             layout,
+            reusable: self.reusable,
         }
     }
 
     #[inline]
     pub fn iter(&self) -> SliceIter<'_, T> {
-        SliceIter::new(
-            &self.storage.buffer,
-            self.len(),
-            self.shape(),
-            self.adj_stride(),
-        )
+        SliceIter::new(&self.storage.buffer, self.len(), self.layout())
+    }
+
+    #[inline]
+    pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> SliceIter<'a, T> {
+        SliceIter::new(&self.storage.buffer, layout.len(), layout)
+    }
+
+    #[inline]
+    pub fn fast_iter(&self) -> IterImpl<ContiguousIter<'_, T>, SliceIter<'_, T>> {
+        let buffer = &self.storage.buffer;
+
+        if self.is_contiguous() {
+            IterImpl::Contiguous(ContiguousIter::new(buffer, self.offset(), self.len()))
+        } else {
+            IterImpl::NotContiguous(SliceIter::new(buffer, self.len(), self.layout()))
+        }
     }
 
     #[inline]
     pub fn copied_iter(&self) -> CopiedSliceIter<'_, T> {
-        CopiedSliceIter::new(
-            &self.storage.buffer,
-            self.len(),
-            self.shape(),
-            self.adj_stride(),
-        )
+        CopiedSliceIter::new(&self.storage.buffer, self.len(), self.layout())
+    }
+
+    #[inline]
+    pub fn copied_fast_iter(
+        &self,
+    ) -> IterImpl<CopiedContiguousIter<'_, T>, CopiedSliceIter<'_, T>> {
+        let buffer = &self.storage.buffer;
+
+        if self.is_contiguous() {
+            IterImpl::Contiguous(CopiedContiguousIter::new(buffer, self.offset(), self.len()))
+        } else {
+            IterImpl::NotContiguous(CopiedSliceIter::new(buffer, self.len(), self.layout()))
+        }
     }
 
     #[inline]
@@ -145,7 +183,31 @@ impl<T: Copy> TensorData<T> {
         Self {
             storage: self.storage.clone_reference(),
             layout: self.layout.clone(),
+            reusable: self.reusable,
         }
+    }
+
+    #[inline]
+    pub fn as_contiguous(&self) -> Self {
+        if !self.is_contiguous() {
+            Self::from_iter(self.copied_iter(), self.shape())
+        } else {
+            self.clone()
+        }
+    }
+
+    #[inline]
+    pub fn mark_as_reusable(mut self) -> Self {
+        self.reusable = true;
+
+        self
+    }
+
+    #[inline]
+    pub fn mark_as_not_reusable(mut self) -> Self {
+        self.reusable = false;
+
+        self
     }
 
     #[inline]
@@ -166,34 +228,15 @@ impl<T: Copy> Clone for TensorData<T> {
         Self {
             storage: self.storage.clone(),
             layout: self.layout.clone(),
+            reusable: self.reusable,
         }
     }
 }
 
 impl<T: Copy> Dimension for TensorData<T> {
     #[inline]
-    fn len(&self) -> usize {
-        self.layout.len()
-    }
-
-    #[inline]
-    fn shape(&self) -> &[i32] {
-        self.layout.shape()
-    }
-
-    #[inline]
-    fn stride(&self) -> &'_ [i32] {
-        self.layout.stride()
-    }
-
-    #[inline]
-    fn adj_stride(&self) -> &'_ [i32] {
-        self.layout.adj_stride()
-    }
-
-    #[inline]
-    fn offset(&self) -> usize {
-        self.layout.offset()
+    fn layout(&self) -> &Layout {
+        &self.layout
     }
 }
 

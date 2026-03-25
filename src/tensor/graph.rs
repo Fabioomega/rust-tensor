@@ -1,12 +1,12 @@
 use std::boxed::Box;
 use std::cell::OnceCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::tensor::definitions::NumberLike;
-use crate::tensor::layout::Layout;
+use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::fusion::try_fuse;
 use crate::tensor::ops::impl_compute_op::OpKind;
 use crate::tensor::ops::{ComputeWrapperSpec, compute_layout, cpu_compute};
@@ -59,10 +59,15 @@ fn get_inputs_tensor_data<T: Copy>(
         let tensor_data = if let Some(count) = reference_counter.get_mut(&id) {
             if *count == 1 {
                 *count = 0;
+
                 computation_cache.remove(&id).unwrap()
             } else {
                 *count -= 1;
-                computation_cache.get(&id).unwrap().clone_reference()
+                computation_cache
+                    .get(&id)
+                    .unwrap()
+                    .clone_reference()
+                    .mark_as_not_reusable()
             }
         } else {
             unreachable!("if this panics you fucked up the topological sort, congrats!")
@@ -104,15 +109,6 @@ impl<T: Copy> Promising for TensorGraphEdge<T> {
     #[inline]
     fn layout(&self) -> &Layout {
         self.data.layout()
-    }
-}
-
-impl<T: Copy> Clone for TensorGraphEdge<T> {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            data: self.data.clone_reference(),
-        }
     }
 }
 
@@ -166,21 +162,31 @@ impl<T: NumberLike> TensorGraphNode<T> {
     }
 
     // Performs a DFS topological sort on the current DAG that this leaf (sink) is part of.
-    //  It should be iterated from right to left.
+    //  It should be iterated from left to right.
     // NOTE: This node is not added to the returning vec.
     //  but, naturally, would be the first element if added.
     // NOTE 2: If a cache and non-cache node with the same id are present in the same DAG,
     //  the cache will not be used. That will not be fixed as it would require
     //  invalidating some elements in the sorted.
     //  It's the user responsibility to use the cached node correctly.
+    // TODO: Maybe make an iterator so that we don't need to allocate a Vec
+    // still, even for big graphs, it should still be ok.
     fn topological_sort(&self) -> (Vec<&NodeKind<T>>, HashMap<usize, usize>) {
         let mut sorted: Vec<&NodeKind<T>> = Vec::with_capacity(64);
         let mut reference_counter: HashMap<usize, usize> = HashMap::new();
 
-        let mut current_inputs = VecDeque::from_iter(self.inputs.iter());
+        let mut stack: Vec<(&NodeKind<T>, bool)> = Vec::new();
 
-        while let Some(inp) = current_inputs.pop_front() {
-            let id = get_id(inp);
+        stack.extend(self.inputs.iter().map(|i| (i, false)));
+
+        while let Some((node, exiting)) = stack.pop() {
+            let id = get_id(node);
+
+            if exiting {
+                sorted.push(node);
+                continue;
+            }
+
             if let Some(count) = reference_counter.get_mut(&id) {
                 *count += 1;
                 continue;
@@ -188,17 +194,17 @@ impl<T: NumberLike> TensorGraphNode<T> {
                 reference_counter.insert(id, 1);
             }
 
-            match inp {
+            stack.push((node, true));
+
+            match node {
                 NodeKind::Edge(_) => {}
-                NodeKind::Node(node) => current_inputs.extend(node.inputs.iter()),
+                NodeKind::Node(n) => stack.extend(n.inputs.iter().rev().map(|i| (i, false))),
                 NodeKind::Cache(cache) => {
                     if !cache.is_cache_filled() {
-                        current_inputs.extend(cache.get_node().inputs.iter())
+                        stack.extend(cache.get_node().inputs.iter().rev().map(|i| (i, false)))
                     }
                 }
             }
-
-            sorted.push(inp);
         }
 
         (sorted, reference_counter)
@@ -212,10 +218,12 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
         let (sorted_dag, mut reference_counter) = self.topological_sort();
         let mut computation_cache: HashMap<usize, TensorData<T>> = HashMap::new();
 
-        for node in sorted_dag.into_iter().rev() {
+        println!("{:?}", sorted_dag);
+
+        for node in sorted_dag.into_iter() {
             match node {
                 NodeKind::Edge(edge) => {
-                    computation_cache.insert(edge.id, edge.compute());
+                    computation_cache.insert(edge.id, edge.compute().mark_as_not_reusable());
                 }
                 NodeKind::Node(node) => {
                     let inputs: Vec<TensorData<T>> = get_inputs_tensor_data(
@@ -224,12 +232,13 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
                         &mut reference_counter,
                     );
 
-                    let result = cpu_compute(&node.op, &inputs);
+                    let result = cpu_compute(&node.op, node.layout(), inputs);
                     computation_cache.insert(node.id, result);
                 }
                 NodeKind::Cache(cache) => {
                     let tensor_data = if cache.is_cache_filled() {
                         unsafe { cache.cache.get().unwrap_unchecked().clone_reference() }
+                            .mark_as_not_reusable()
                     } else {
                         let inputs: Vec<TensorData<T>> = get_inputs_tensor_data(
                             &cache.node.inputs,
@@ -237,9 +246,9 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
                             &mut reference_counter,
                         );
 
-                        let result = cpu_compute(&cache.node.op, &inputs);
+                        let result = cpu_compute(&cache.node.op, cache.layout(), inputs);
                         let _ = cache.cache.set(result.clone_reference());
-                        result
+                        result.mark_as_not_reusable()
                     };
 
                     computation_cache.insert(cache.node.id, tensor_data);
@@ -250,7 +259,7 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
         let inputs: Vec<TensorData<T>> =
             get_inputs_tensor_data(&self.inputs, &mut computation_cache, &mut reference_counter);
 
-        cpu_compute(&self.op, &inputs)
+        cpu_compute(&self.op, self.layout(), inputs).mark_as_not_reusable()
     }
 
     #[inline]

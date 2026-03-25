@@ -24,3 +24,27 @@ macro_rules! debug_shape_check {
         });
     };
 }
+
+#[macro_export]
+macro_rules! branch_fast_iter {
+    ($value:expr => $name:ident, $body:expr) => {
+        match $value {
+            $crate::tensor::storage::IterImpl::Contiguous($name) => $body,
+            $crate::tensor::storage::IterImpl::NotContiguous($name) => $body,
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! cfg_debug_only {
+    ($body:expr) => {
+        #[cfg(feature = "debug_only_check")]
+        {
+            debug_only!($body)
+        }
+        #[cfg(not(feature = "debug_only_check"))]
+        {
+            $body
+        }
+    };
+}

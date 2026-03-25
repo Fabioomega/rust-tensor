@@ -1,12 +1,14 @@
 use std::ops::{Add, Div, Mul, Sub};
-use std::process::Output;
 
+use crate::cfg_debug_only;
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::errors::OpError;
 use crate::tensor::graph::NodeKind;
-use crate::tensor::layout::Layout;
+use crate::tensor::mem_formats::layout::Layout;
+use crate::tensor::mem_formats::slice::SliceRange;
 use crate::tensor::ops::ComputeWrapperSpec;
-use crate::tensor::ops::impl_compute_op::{OpKind, OpScalarKind, compute_layout};
+use crate::tensor::ops::compute_layout;
+use crate::tensor::ops::impl_compute_op::{OpKind, OpKindScalar};
 use crate::tensor::traits::Promising;
 use crate::tensor::{CachedTensorPromise, Tensor, TensorPromise};
 
@@ -29,20 +31,11 @@ where
     let input = Box::new([source.create_node()]);
     let layout = source.layout().view(shape);
 
-    #[cfg(feature = "debug_only_check")]
-    {
-        debug_only!({
-            if let Err(err) = layout {
-                return Err(err);
-            }
-        })
-    }
-    #[cfg(not(feature = "debug_only_check"))]
-    {
+    cfg_debug_only!({
         if let Err(err) = layout {
             return Err(err);
         }
-    }
+    });
 
     Ok(TensorPromise::new(
         OpKind::View(unsafe { layout.unwrap_unchecked() }),
@@ -50,15 +43,81 @@ where
     ))
 }
 
+fn slice_impl<'a, D>(
+    source: &'a D,
+    range: &[SliceRange],
+) -> Result<TensorPromise<D::Output>, OpError<'a>>
+where
+    D: ComputationDef,
+    D::Output: NumberLike,
+{
+    let input = Box::new([source.create_node()]);
+    let layout = source.layout().slice(range);
+
+    cfg_debug_only!({
+        if let Err(err) = layout {
+            return Err(err);
+        }
+    });
+
+    Ok(TensorPromise::new(
+        OpKind::Slice(unsafe { layout.unwrap_unchecked() }),
+        input,
+    ))
+}
+
+fn transpose_impl<D>(source: &D) -> TensorPromise<D::Output>
+where
+    D: ComputationDef,
+    D::Output: NumberLike,
+{
+    let input = Box::new([source.create_node()]);
+
+    TensorPromise::new(OpKind::Transpose, input)
+}
+
+fn transpose_axes_impl<'a, D>(
+    source: &'a D,
+    axes: &[usize],
+) -> Result<TensorPromise<D::Output>, OpError<'a>>
+where
+    D: ComputationDef,
+    D::Output: NumberLike,
+{
+    let input = Box::new([source.create_node()]);
+    let layout = source.layout().transpose_axes(axes);
+
+    cfg_debug_only!({
+        if let Err(err) = layout {
+            return Err(err);
+        }
+    });
+
+    Ok(TensorPromise::new(
+        OpKind::TransposeAxes(unsafe { layout.unwrap_unchecked() }),
+        input,
+    ))
+}
+
+fn as_contiguous_impl<D>(source: &D) -> TensorPromise<D::Output>
+where
+    D: ComputationDef,
+    D::Output: NumberLike,
+{
+    let input = Box::new([source.create_node()]);
+
+    TensorPromise::new(OpKind::AsContiguous, input)
+}
+
 //////////////////////////////////////////////////////////////
-///
+
 fn add_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output>
 where
     D: ComputationDef,
     D::Output: Copy + ComputeWrapperSpec,
 {
     TensorPromise::new(
-        OpKind::ScalarOp(OpScalarKind::Sum(rhs)),
+        OpKind::ScalarOp(OpKindScalar::Sum(rhs)),
         Box::new([lhs.create_node()]),
     )
 }
@@ -69,7 +128,7 @@ where
     D::Output: Copy + ComputeWrapperSpec,
 {
     TensorPromise::new(
-        OpKind::ScalarOp(OpScalarKind::Sub(rhs)),
+        OpKind::ScalarOp(OpKindScalar::Sub(rhs)),
         Box::new([lhs.create_node()]),
     )
 }
@@ -80,7 +139,7 @@ where
     D::Output: Copy + ComputeWrapperSpec,
 {
     TensorPromise::new(
-        OpKind::ScalarOp(OpScalarKind::Mul(rhs)),
+        OpKind::ScalarOp(OpKindScalar::Mul(rhs)),
         Box::new([lhs.create_node()]),
     )
 }
@@ -91,7 +150,7 @@ where
     D::Output: Copy + ComputeWrapperSpec,
 {
     TensorPromise::new(
-        OpKind::ScalarOp(OpScalarKind::Div(rhs)),
+        OpKind::ScalarOp(OpKindScalar::Div(rhs)),
         Box::new([lhs.create_node()]),
     )
 }
@@ -211,6 +270,74 @@ macro_rules! impl_view {
     };
 }
 
+macro_rules! impl_slice {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: NumberLike + ComputeWrapperSpec,
+        {
+            #[inline]
+            pub fn slice(&self, shape: &[SliceRange]) -> Result<TensorPromise<T>, OpError<'_>> {
+                slice_impl(self, shape)
+            }
+        }
+    };
+}
+
+macro_rules! impl_transpose {
+    ($ty: ident) => {
+        impl<T> $ty<T>
+        where
+            T: NumberLike + ComputeWrapperSpec,
+        {
+            #[inline]
+            pub fn transpose(&self) -> TensorPromise<T> {
+                transpose_impl(self)
+            }
+        }
+    };
+}
+
+macro_rules! impl_transpose_axes {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: NumberLike + ComputeWrapperSpec,
+        {
+            #[inline]
+            pub fn transpose_axes<'a>(
+                &'a self,
+                axes: &[usize],
+            ) -> Result<TensorPromise<T>, OpError<'a>> {
+                transpose_axes_impl(self, axes)
+            }
+        }
+    };
+}
+
+macro_rules! impl_as_contiguous {
+    ($ty: ident) => {
+        impl<T> $ty<T>
+        where
+            T: NumberLike + ComputeWrapperSpec,
+        {
+            #[inline]
+            pub fn as_contiguous(&self) -> TensorPromise<T> {
+                as_contiguous_impl(self)
+            }
+        }
+    };
+}
+
+macro_rules! impl_reshape_like {
+    ($ty:ident) => {
+        impl_view!($ty);
+        impl_slice!($ty);
+        impl_transpose!($ty);
+        impl_transpose_axes!($ty);
+        impl_as_contiguous!($ty);
+    };
+}
 //////////////////////////////////////////////////////////////
 
 macro_rules! impl_add_scalar {
@@ -403,9 +530,9 @@ impl_computation_def!(Tensor, Edge);
 impl_computation_def!(TensorPromise, Node);
 impl_computation_def!(CachedTensorPromise, Cache);
 
-impl_view!(Tensor);
-impl_view!(TensorPromise);
-impl_view!(CachedTensorPromise);
+impl_reshape_like!(Tensor);
+impl_reshape_like!(TensorPromise);
+impl_reshape_like!(CachedTensorPromise);
 
 impl_op_scalar!(Tensor);
 impl_op_scalar!(TensorPromise);

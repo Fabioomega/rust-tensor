@@ -1,0 +1,21 @@
+This is a file to remind myself of project decision that I made, in case I forget.
+
+1. Inline operations will panic, but operation using methods will return a Result.
+  - That choice was mostly for ergonomics. Something like (A + B).unwrap() is horrible to use. Also, if you are trying to sum 2 tensors of different shapes that's 100% an error on your part. If they come from user input, please check their shapes first!
+  - However, methods like A.matmul(B) will return a Result. As A.matmul(B).unwrap() feels easy and pratical while maintaing safety.
+  - For this to be possible, the op functions, like matmul, must call get_layout and check if the layout is compatible. The cpu_compute series will not have any error propagation inside. 
+
+2. Cache as a user choice.
+  - This library will try to cache things the least it can without killing performance because tensors can be huge.
+  - The materialization of a computation flow should discard tensors eagerly. See the implementation of TensorGraphNode.compute.
+  - .cache() is a way to tell the library that the user is aware that extra memory will be used to cache that tensor.
+
+3. The distinction between Tensor, Promise and CachedPromise.
+  - Tensor: represents an allocated buffer. It may no be contiguous or own the data, but its there.
+  - Promise: is the carrier of operation information and essential for operator fusion and backpropagation. Should not be allocating tensors without user input. That's why the .materialize() exist.
+  - CachedPromise: Represents a Promise that was selective made to cache its output. Should be used only if this promise will be reused across different execution flows ( .materialize() ). The topological sorting should handle cases where some promise is used multiple times in an execution flow. Ex.: A + B -> C; C + D -> E; C + F -> G; E + G -> Result. In that example the C was used 2 times, so it will be cached during the computation of Result and then discarded.
+
+4. Execution flows (materialization) requires that the type of that tensor, ie. f64, f32, etc., has a cpu_compute version of the function available for that type. A generic impl may come in the future but, for now, only some types have a backend supporting them.
+
+5. Fusion is order specific and may not work.
+  - The current fusion implementation, more specifically try_fusion, is order dependant and for more complicated cases like 3+ inputs it may not work. Also, the current impl does not support +3 fusions unless you use intermediary fusions.

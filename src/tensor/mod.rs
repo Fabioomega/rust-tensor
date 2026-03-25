@@ -13,8 +13,8 @@ pub mod errors;
 mod impl_generics;
 mod internals;
 mod iter;
-mod layout;
 mod macros;
+mod mem_formats;
 mod mkl_extension;
 mod storage;
 mod traits;
@@ -28,6 +28,7 @@ pub use convenience::*;
 // pub use iter::StepInfo;
 // pub use traits::Dimension;
 
+pub use mem_formats::slice::SliceRange;
 pub use promise::{CachedTensorPromise, TensorPromise};
 pub use tensor::Tensor;
 pub use traits::Dimension;

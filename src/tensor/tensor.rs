@@ -1,9 +1,11 @@
 use crate::impl_display;
+use crate::tensor::errors::OpError;
 use crate::tensor::graph::{NodeKind, TensorGraphEdge};
-use crate::tensor::iter::{InformedSliceIter, SliceIter};
+use crate::tensor::iter::{ContiguousIter, InformedSliceIter, SliceIter};
+use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::promise::TensorPromise;
 use crate::tensor::storage::TensorData;
-use crate::tensor::traits::Dimension;
+use crate::tensor::traits::{Dimension, Promising};
 use std::sync::Arc;
 
 pub struct Tensor<T: Copy> {
@@ -21,10 +23,10 @@ impl<T: Copy> Tensor<T> {
     }
 
     #[inline]
-    pub fn from_vec(vector: Box<[T]>, shape: &[i32]) -> Self {
+    pub fn from_vec(vector: Vec<T>, shape: &[i32], offset: usize) -> Self {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(TensorData::from_vec(
-                vector, shape,
+                vector, shape, offset,
             ))),
         }
     }
@@ -34,8 +36,8 @@ impl<T: Copy> Tensor<T> {
     where
         I: IntoIterator<Item = T>,
     {
-        let vector: Box<[T]> = std::vec::Vec::from_iter(iter).into_boxed_slice();
-        Self::from_vec(vector, shape)
+        let vector: Vec<T> = std::vec::Vec::from_iter(iter);
+        Self::from_vec(vector, shape, 0)
     }
 
     #[inline]
@@ -48,6 +50,11 @@ impl<T: Copy> Tensor<T> {
     #[inline]
     pub fn iter(&self) -> SliceIter<'_, T> {
         self.graph.get().iter()
+    }
+
+    #[inline]
+    pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> SliceIter<'a, T> {
+        unsafe { self.graph.get().iter_as_layout(layout) }
     }
 
     #[inline]
@@ -71,6 +78,8 @@ impl<T: Copy> Tensor<T> {
     // Make a shallow copy of this tensor.
     // That means that the underlying memory is, or may be, shared with other objects.
     // The shallow copy does not maintain connection with promises depending on this tensor.
+    // It will be treated as a completely different tensor during topological sorting
+    // and materialization.
     // If you want to create a shallow copy while maintaining connection with existing promises
     // use clone_reference() instead.
     pub fn clone_detached(&self) -> Self {
@@ -94,28 +103,8 @@ impl<T: NumberLike> Tensor<T> {
 
 impl<T: Copy> Dimension for Tensor<T> {
     #[inline]
-    fn len(&self) -> usize {
-        self.graph.get().len()
-    }
-
-    #[inline]
-    fn shape(&self) -> &[i32] {
-        self.graph.get().shape()
-    }
-
-    #[inline]
-    fn stride(&self) -> &'_ [i32] {
-        self.graph.get().stride()
-    }
-
-    #[inline]
-    fn adj_stride(&self) -> &'_ [i32] {
-        self.graph.get().adj_stride()
-    }
-
-    #[inline]
-    fn offset(&self) -> usize {
-        self.graph.get().offset()
+    fn layout(&self) -> &super::mem_formats::layout::Layout {
+        self.graph.layout()
     }
 }
 

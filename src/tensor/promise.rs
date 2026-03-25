@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphNode};
-use crate::tensor::layout::Layout;
+use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::impl_compute_op::OpKind;
 use crate::tensor::tensor::Tensor;
 use crate::tensor::traits::{Dimension, Promising};
@@ -63,27 +63,15 @@ impl<P: Promising<Output: NumberLike>> RawTensorPromise<P> {
 
 impl<P: Promising> Dimension for RawTensorPromise<P> {
     #[inline]
-    fn len(&self) -> usize {
-        self.graph.layout().len()
+    fn layout(&self) -> &Layout {
+        self.graph.layout()
     }
+}
 
-    #[inline]
-    fn shape(&self) -> &[i32] {
-        self.graph.layout().shape()
-    }
-
-    #[inline]
-    fn stride(&self) -> &'_ [i32] {
-        self.graph.layout().stride()
-    }
-
-    #[inline]
-    fn adj_stride(&self) -> &'_ [i32] {
-        self.graph.layout().adj_stride()
-    }
-
-    #[inline]
-    fn offset(&self) -> usize {
-        self.graph.layout().offset()
+impl<P: Promising> Clone for RawTensorPromise<P> {
+    fn clone(&self) -> Self {
+        Self {
+            graph: self.graph.clone(),
+        }
     }
 }

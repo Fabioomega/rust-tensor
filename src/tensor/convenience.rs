@@ -1,21 +1,21 @@
 #[macro_export]
 macro_rules! s {
     ($($range: expr),*) => {
-        &[$($crate::tensor::slice::SliceRange::from($range)),*]
+        &[$($crate::tensor::SliceRange::from($range)),*]
     };
 }
 
 #[macro_export]
 macro_rules! zeros {
     ($shape:expr) => {
-        $crate::tensor::Mat::from_scalar(0.0, $shape)
+        $crate::tensor::Tensor::from_scalar(0.0, $shape)
     };
 }
 
 #[macro_export]
 macro_rules! ones {
     ($shape:expr) => {
-        $crate::tensor::Mat::from_scalar(1.0, $shape)
+        $crate::tensor::Tensor::from_scalar(1.0, $shape)
     };
 }
 
@@ -44,7 +44,7 @@ pub mod arange {
             v.push(i as f64);
         }
 
-        Tensor::from_vec(v.into_boxed_slice(), &[size as i32])
+        Tensor::from_vec(v, &[size as i32], 0)
     }
 
     pub fn _arange_start(start: usize, end: usize) -> Tensor<f64> {
@@ -56,7 +56,7 @@ pub mod arange {
 
         let size = v.len();
 
-        Tensor::from_vec(v.into_boxed_slice(), &[1, size as i32])
+        Tensor::from_vec(v, &[1, size as i32], 0)
     }
 
     pub fn _arange_step(start: usize, end: usize, step: usize) -> Tensor<f64> {
@@ -68,7 +68,7 @@ pub mod arange {
 
         let size = v.len();
 
-        Tensor::from_vec(v.into_boxed_slice(), &[size as i32])
+        Tensor::from_vec(v, &[size as i32], 0)
     }
 
     #[macro_export]
@@ -93,7 +93,7 @@ pub mod arange {
             v.push(i as f64);
         }
 
-        Tensor::from_vec(v.into_boxed_slice(), shape)
+        Tensor::from_vec(v, shape, 0)
     }
 
     pub fn _arange_start_shape(start: usize, end: usize, shape: &[i32]) -> Tensor<f64> {
@@ -103,7 +103,7 @@ pub mod arange {
             v.push(i as f64);
         }
 
-        Tensor::from_vec(v.into_boxed_slice(), shape)
+        Tensor::from_vec(v, shape, 0)
     }
 
     pub fn _arange_step_shape(start: usize, end: usize, step: usize, shape: &[i32]) -> Tensor<f64> {
@@ -113,6 +113,6 @@ pub mod arange {
             v.push(i as f64);
         }
 
-        Tensor::from_vec(v.into_boxed_slice(), shape)
+        Tensor::from_vec(v, shape, 0)
     }
 }
