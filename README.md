@@ -89,7 +89,7 @@ The project name and direction are strongly influenced by this ecosystem.
 
 ### 1) Tensor Data Layer
 
-- `Storage<T>` wraps `Arc<RwLock<Vec<T>>>`.
+- `Storage<T>` wraps `Arc<Vec<T>>`.
 - `TensorData<T>` pairs storage with `Layout` and a `reusable` marker.
 - `Layout` tracks shape/stride/adj_stride/offset/len and provides transformation methods.
 

@@ -1,4 +1,3 @@
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::iter::FusedIterator;
 use std::ptr::NonNull;
 use std::sync::Arc;
