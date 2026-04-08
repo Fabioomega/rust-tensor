@@ -64,13 +64,13 @@ fn fuse_sum_scalar<T: NumberLike>(
     let s1: T = match op1 {
         OpKindScalar::Sum(scalar) => *scalar,
         OpKindScalar::Sub(scalar) => -*scalar,
-        _ => unreachable!("You fucked something up!"),
+        _ => unreachable!("no other op should appear here"),
     };
 
     let s2: T = match op2 {
         OpKindScalar::Sum(scalar) => *scalar,
         OpKindScalar::Sub(scalar) => -*scalar,
-        _ => unreachable!("You fucked something up!"),
+        _ => unreachable!("no other op should appear here"),
     };
 
     Fusion {
@@ -179,7 +179,7 @@ fn fuse_scalar_combination<T: NumberLike>(
 
             vec.into_boxed_slice()
         }
-        _ => unreachable!("not other options should be returned from fuse_scalars"),
+        _ => unreachable!("no other op should appear here"),
     };
 
     Fusion {

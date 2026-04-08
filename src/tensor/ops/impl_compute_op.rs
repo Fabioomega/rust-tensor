@@ -189,7 +189,7 @@ fn cpu_compute_elementwise_f64(
 
             TensorData::from_vec(buffer, output_layout.shape(), offset)
         }
-        _ => unreachable!(""),
+        _ => unreachable!("no other op should appear here"),
     }
     .mark_as_reusable()
 }

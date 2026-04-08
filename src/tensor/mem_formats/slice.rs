@@ -114,7 +114,7 @@ impl SliceInfo {
 
                     true_index as i32
                 }
-                _ => unreachable!(),
+                _ => unreachable!("a new variation of SliceBounds was implemented"),
             };
 
             let end = match r.end {
@@ -124,7 +124,7 @@ impl SliceInfo {
                     let true_index = layout.shape()[dim] as i64 - i as i64;
                     true_index as i32
                 }
-                _ => unreachable!(),
+                _ => unreachable!("a new variation of SliceBounds was implemented"),
             };
 
             cfg_debug_only!(if end <= start {

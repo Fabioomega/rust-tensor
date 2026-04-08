@@ -70,7 +70,9 @@ fn get_inputs_tensor_data<T: Copy>(
                     .mark_as_not_reusable()
             }
         } else {
-            unreachable!("if this panics you fucked up the topological sort, congrats!")
+            unreachable!(
+                "this should never panic unless the implementation of the topological sort is wrong"
+            )
         };
 
         inputs_data.push(tensor_data);
@@ -137,7 +139,9 @@ impl<T: NumberLike> TensorGraphNode<T> {
         let layout = compute_layout(&fused.op, &layouts);
 
         if let Err(err) = layout {
-            panic!("{}", err);
+            unreachable!(
+                "the compute layout should never fail. if this happened the op interface is wrong"
+            );
         }
 
         let unchecked_layout = unsafe { layout.unwrap_unchecked() };

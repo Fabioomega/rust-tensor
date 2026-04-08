@@ -18,7 +18,7 @@ fn strip_tensor<T: Copy + Default>(tensor: TensorData<T>) -> ReusableVec<T> {
         v.resize(len + offset, T::default());
         ReusableVec { v, offset }
     } else {
-        unreachable!("the fuck. if the tensor is reusable why the fuck is it not unique?")
+        unreachable!("a reusable tensor should not be shared")
     }
 }
 
