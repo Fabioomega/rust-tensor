@@ -138,7 +138,7 @@ impl<T: NumberLike> TensorGraphNode<T> {
         let layouts = get_inputs_layout(&fused.inputs);
         let layout = compute_layout(&fused.op, &layouts);
 
-        if let Err(err) = layout {
+        if layout.is_err() {
             unreachable!(
                 "the compute layout should never fail. if this happened the op interface is wrong"
             );
@@ -168,7 +168,7 @@ impl<T: NumberLike> TensorGraphNode<T> {
     // Performs a DFS topological sort on the current DAG that this leaf (sink) is part of.
     //  It should be iterated from left to right.
     // NOTE: This node is not added to the returning vec.
-    //  but, naturally, would be the first element if added.
+    //  but, naturally, would be the last element if added.
     // NOTE 2: If a cache and non-cache node with the same id are present in the same DAG,
     //  the cache will not be used. That will not be fixed as it would require
     //  invalidating some elements in the sorted.
