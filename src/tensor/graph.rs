@@ -222,8 +222,6 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
         let (sorted_dag, mut reference_counter) = self.topological_sort();
         let mut computation_cache: HashMap<usize, TensorData<T>> = HashMap::new();
 
-        println!("{:?}", sorted_dag);
-
         for node in sorted_dag.into_iter() {
             match node {
                 NodeKind::Edge(edge) => {

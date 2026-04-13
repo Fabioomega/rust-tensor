@@ -1,3 +1,4 @@
+use crate::cfg_tracing;
 use crate::tensor::definitions::{ChunkedIter, NumberLike};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::reusable::{get_reusable_or_alloc, unordered_get_reusable_or_alloc_n};
@@ -5,6 +6,7 @@ use crate::tensor::storage::{Storage, TensorData};
 use crate::tensor::traits::{Dimension, StreamingIterator};
 use cblas_sys::cblas_dgemm;
 use intel_mkl_sys::{vdAdd, vdDiv, vdMul, vdSub};
+use tracing::{Level, event};
 
 // TODO: Design some way to fuse arbitrary combinations of ops
 // without handling it at the runtime, because it would be annoying.
@@ -199,7 +201,7 @@ fn cpu_compute_op_f64(
     output_layout: &Layout,
     inputs: Vec<TensorData<f64>>,
 ) -> TensorData<f64> {
-    println!("Calling compute! op = {:?}", op);
+    cfg_tracing!(event!(Level::DEBUG, "Computing {:?}", op));
 
     match op {
         OpKind::ScalarOp(_) | OpKind::FusedScalar(_) => {

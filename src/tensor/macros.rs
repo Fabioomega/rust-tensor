@@ -48,3 +48,27 @@ macro_rules! cfg_debug_only {
         }
     };
 }
+
+#[macro_export]
+macro_rules! cfg_tracing {
+    ($body:expr) => {
+        #[cfg(feature = "tracing")]
+        {
+            $body
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! cfg_tracing_in_scope {
+    ($scope:expr, $($body:tt)*) => {{
+        #[cfg(feature = "tracing")]
+        {
+            $scope.in_scope(|| { $($body)* })
+        }
+        #[cfg(not(feature = "tracing"))]
+        {
+            { $($body)* }
+        }
+    }};
+}

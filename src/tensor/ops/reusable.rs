@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use crate::branch_fast_iter;
 use crate::tensor::Dimension;
 use crate::tensor::storage::TensorData;
+use crate::{branch_fast_iter, cfg_tracing, cfg_tracing_in_scope};
+use tracing::{Level, event, span};
 
 pub(crate) struct ReusableVec<T> {
     pub(crate) v: Vec<T>,
@@ -24,7 +25,6 @@ fn strip_tensor<T: Copy + Default>(tensor: TensorData<T>) -> ReusableVec<T> {
 
 #[inline]
 pub fn alloc_cont_tensor<T: Copy + Default>(tensor: &TensorData<T>) -> ReusableVec<T> {
-    println!("Allocated memory!");
     branch_fast_iter!(tensor.copied_fast_iter() => iter, {
         let v = Vec::from_iter(iter);
 
@@ -34,11 +34,16 @@ pub fn alloc_cont_tensor<T: Copy + Default>(tensor: &TensorData<T>) -> ReusableV
 
 #[inline]
 pub fn get_reusable_or_alloc<T: Copy + Default>(tensor: TensorData<T>) -> ReusableVec<T> {
-    if tensor.reusable && tensor.is_contiguous() {
-        strip_tensor(tensor)
-    } else {
-        alloc_cont_tensor(&tensor)
-    }
+    cfg_tracing_in_scope!(
+        tracing::span!(Level::DEBUG, "Checking if tensor is reusable"),
+        if tensor.reusable && tensor.is_contiguous() {
+            event!(Level::DEBUG, "Tensor reused");
+            strip_tensor(tensor)
+        } else {
+            event!(Level::DEBUG, "Tensor allocated {} elements", tensor.len());
+            alloc_cont_tensor(&tensor)
+        }
+    )
 }
 
 #[inline]
