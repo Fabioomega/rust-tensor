@@ -65,7 +65,7 @@ fn compute_scalar_op<T: NumberLike>(op: &OpKindScalar<T>, mut input: Vec<T>) -> 
         }
         OpKindScalar::Sub(scalar) => {
             for el in input.iter_mut() {
-                *el = *el + *scalar;
+                *el = *el - *scalar;
             }
             input
         }
