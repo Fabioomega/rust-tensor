@@ -225,7 +225,7 @@ fn cpu_compute_elementwise_f64(
 fn cpu_compute_op_f64(
     op: &OpKind<f64>,
     output_layout: &Layout,
-    inputs: Vec<TensorData<f64>>,
+    mut inputs: Vec<TensorData<f64>>,
 ) -> TensorData<f64> {
     match op {
         OpKind::ScalarOp(_) | OpKind::FusedScalar(_) => {
@@ -249,7 +249,7 @@ fn cpu_compute_op_f64(
         OpKind::Sub => compute_elementwise_tensor_tensor(inputs, vdSub),
         OpKind::Mul => compute_elementwise_tensor_tensor(inputs, vdMul),
         OpKind::Div => compute_elementwise_tensor_tensor(inputs, vdDiv),
-        OpKind::NoOp => inputs[0].clone_reference(),
+        OpKind::NoOp => unsafe { inputs.pop().unwrap_unchecked() },
         _ => todo!("not implemented"),
     }
 }
